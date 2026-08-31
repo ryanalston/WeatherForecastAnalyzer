@@ -1,0 +1,23 @@
+[
+	{"name": "ReportDateTime", 	"type": "DATETIME", 		"mode": "REQUIRED"},
+	{"name": "ForecastDateTime", 	"type": "DATETIME", 		"mode": "REQUIRED"},
+	{"name": "RequestedLatitude", 	"type": "FLOAT", 		"mode": "REQUIRED"},
+	{"name": "RequestedLongitude", 	"type": "FLOAT", 		"mode": "REQUIRED"},
+	{"name": "ResolvedLatitude", 	"type": "FLOAT", 		"mode": "REQUIRED"},
+	{"name": "ResolvedLongitude", 	"type": "FLOAT", 		"mode": "REQUIRED"},
+
+	{"name": "City", 		"type": "STRING", 		"mode": "REQUIRED"},
+	{"name": "Elevation", 		"type": "FLOAT", 		"mode": "REQUIRED"},
+	{"name": "Temperature_2m", 	"type": "FLOAT", 		"mode": "REQUIRED"},
+	{"name": "RelativeHumidity_2m", "type": "FLOAT", 		"mode": "REQUIRED"},
+	{"name": "DewPoint_2m", 	"type": "FLOAT", 		"mode": "REQUIRED"},
+	{"name": "ApparentTemperature", "type": "FLOAT", 		"mode": "REQUIRED"},
+	{"name": "CloudCover", 		"type": "FLOAT", 		"mode": "REQUIRED"},
+	{"name": "WindSpeed_10m", 	"type": "FLOAT", 		"mode": "REQUIRED"},
+	{"name": "WindDirection_10m", 	"type": "FLOAT", 		"mode": "REQUIRED"},
+	{"name": "WeatherCode", 	"type": "INTEGER", 		"mode": "REQUIRED"},
+	{"name": "Precipitation", 	"type": "FLOAT", 		"mode": "REQUIRED"},
+	{"name": "Snowfall", 		"type": "FLOAT", 		"mode": "REQUIRED"},
+	{"name": "Rain", 		"type": "FLOAT", 		"mode": "REQUIRED"},
+	{"name": "Showers", 		"type": "FLOAT", 		"mode": "REQUIRED"}
+]

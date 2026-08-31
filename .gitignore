@@ -1,0 +1,9 @@
+venv/
+drop/
+archived/
+__pycache__/
+*.out
+*.o
+*.tar.gz
+google-cloud-sdk/
+tags
