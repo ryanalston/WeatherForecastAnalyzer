@@ -9,13 +9,20 @@ pandas dataframe that will be later loaded into BigQuery.
 For the full rationale behind the schema, key design, and tradeoffs, see
 DESIGN_NOTES.md. This file is a quick orientation/runbook, not the design doc.
 
+All code in this project was written independently as a hands-on learning excersise.  
+Claude was used in a code-review and debugging-partner role thoughout.  It was 
+responsible for catching bugs, questioning design descisions, and explaining 
+concepts, but didn't write the implementation.  This README and DESIGN_NOTES.md 
+were drafted with Claude's assistance, based on design decisions made during 
+development.
+
 Pipeline Flow
 
 Runs hourly via cron, driven end-to-end by Pipeline.py:
 
   1. Extract.py queries the Open-Meteo API per configured location.
   2. Archive.py writes each successful pull to drop/ as a JSON file
-     (one file per city per run) before anything is transformed or loaded --
+     (one file per city per run) before anything is transformed or loaded -- 
      this is the raw, unprocessed record of what the API returned.
   3. Transform.py reshapes the combined raw results into a single pandas
      DataFrame: flattens the hourly arrays into rows, attaches metadata
@@ -40,9 +47,9 @@ File Responsibilities
                  to drop/ immediately after extract, then moves it to
                  archived/ once that city's data is successfully loaded.
   Transform.py - field name normalization (API names -> schema names),
-                 metadata enrichment (ReportDateTime), type enforcement.
-                 Deliberately no computed/derived fields -- see
-                 DESIGN_NOTES.md "Layer Responsibilities".
+                 metadata enrichment (attaches ReportDateTime from the cron-slot 
+                 metadata), type enforcement. Deliberately no computed/derived fields 
+                 -- see DESIGN_NOTES.md "Layer Responsibilities".
   Load.py      - ensures the BigQuery table exists (via WeatherForecastAnalyzer.json
                  schema) and writes the transformed DataFrame into it.
   SetupDW.py   - one-time setup: creates the BigQuery dataset. Run manually,
