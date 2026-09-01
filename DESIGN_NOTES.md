@@ -1,81 +1,260 @@
 WeatherForecastAnalyzer — Design Notes
 
-This document captures the why behind the project's architecture and schema decisions — context that's too detailed for the README but useful for anyone (including future-me, or a tool reviewing this code) picking the project back up.
+This document captures the why behind the project's architecture and schema
+decisions — context that's too detailed for the README but useful for anyone
+(including future-me, or a tool reviewing this code) picking the project back
+up.
 
 Core Hypothesis
 
-Forecasts are predictions, not facts — a forecast made for 3pm today isn't the actual temperature, it's an estimate that should get more accurate the closer the prediction is made to the actual event. This project captures forecasts repeatedly over time in order to measure: how does forecast accuracy change as lead time (the gap between when a forecast was made and the time it's predicting) shrinks?
+Forecasts are predictions, not facts — a forecast made for 3pm today isn't the
+actual temperature, it's an estimate that should get more accurate the closer
+the prediction is made to the actual event. This project captures forecasts
+repeatedly over time in order to measure: how does forecast accuracy change as
+lead time (the gap between when a forecast was made and the time it's
+predicting) shrinks?
 
 Background: Why This Pattern Is Familiar
 
-This project deliberately mirrors a data pattern from prior production work (a sales/marketing reporting pipeline): a value that isn't final at the moment it's first observed, but gets more accurate/complete as time passes (e.g. attribution data trickling in after a conversion date). That system tracked both the date being reported on and the date the report was run, so historical values were never overwritten — every observation was preserved as its own row, segmented by report date rather than event date.
+This project deliberately mirrors a data pattern from prior production work (a
+sales/marketing reporting pipeline): a value that isn't final at the moment
+it's first observed, but gets more accurate/complete as time passes (e.g.
+attribution data trickling in after a conversion date). That system tracked
+both the date being reported on and the date the report was run, so historical
+values were never overwritten — every observation was preserved as its own row,
+segmented by report date rather than event date.
 
 This project reproduces the same shape of problem in a different domain:
 
-Then: a "sale" attributed to a given day, re-estimated in every subsequent report as attribution data arrived late.
-Now: a forecast for a given future moment, re-estimated every time a new pull is made closer to that moment.
+Then: a "sale" attributed to a given day, re-estimated in every subsequent
+report as attribution data arrived late. Now: a forecast for a given future
+moment, re-estimated every time a new pull is made closer to that moment.
 
-Structurally identical. Same schema pattern, same eventual SQL (window functions partitioning by the target and ordering by report time to get "latest known value"), different subject matter.
+Structurally identical. Same schema pattern, same eventual SQL (window
+functions partitioning by the target and ordering by report time to get "latest
+known value"), different subject matter.
 
 Schema Design
 
-Primary key: RequestedLatitude | RequestedLongitude | ResolvedLatitude | ResolvedLongitude | ReportDateTime | ForecastDateTime
+Primary key: RequestedLatitude | RequestedLongitude | ResolvedLatitude |
+ResolvedLongitude | ReportDateTime | ForecastDateTime
 
-RequestedLatitude / RequestedLongitude — the coordinates actually sent to the API for this row. Replaces the earlier single Location field, which assumed one location meant one point. That assumption doesn't hold: a single city can be pinned to multiple query points (denser sampling of forecast tiles within the same city), so City is no longer sufficient to disambiguate a row on its own — see City under Metadata Fields below. RequestedLatitude/RequestedLongitude is what carries that disambiguating role now.
-  - Eventually Source will probably need to join the key too (once a second data source is added, the same requested point/forecast moment could be reported by more than one provider). Not a concern yet with a single source in use — noting it here so it isn't forgotten later, not addressing it now.
-ResolvedLatitude / ResolvedLongitude — the coordinates the API actually resolved the forecast to (returned in the response — the API snaps a requested point to its nearest grid tile/station, which is not guaranteed to be the exact point requested). Added to the key alongside RequestedLatitude/RequestedLongitude so downstream analysis can measure forecast accuracy against the tile the data really came from, rather than assuming resolution == the point requested. This also lets later analysis notice when multiple nearby Requested points collapse onto the same Resolved tile, or the reverse.
-ReportDateTime — when this specific forecast was pulled, expressed as the intended cron slot (e.g. 00:00/04:00/08:00/...), not the literal wall-clock moment a request happened to complete. The API does not provide a generation timestamp (confirmed — see Known Gaps), so the original plan of keying off the API's own generation time isn't available. Computed once per pipeline run in Pipeline.py, before the location loop starts and before any retries — every location and every retry attempt in that run reads the same value. This recovers the same retry-safety property the API-timestamp approach was meant to provide: a failed request retried within the same scheduled slot collides on the same ReportDateTime instead of producing a second row for what's actually the same intended observation. The value is computed in Pipeline.py, but attaching it to rows still happens in Transform, alongside Source/Locale, via the metadata dict (see Metadata Fields / Layer Responsibilities below) — kept there so all metadata enrichment stays in one place rather than being split across files.
-ForecastDateTime — the future date/time this forecast row is about (renamed from an earlier Date/Time draft for clarity, since plain Date/Time was ambiguous next to ReportDateTime).
+RequestedLatitude / RequestedLongitude — the coordinates actually sent to the
+API for this row. Replaces the earlier single Location field, which assumed one
+location meant one point. That assumption doesn't hold: a single city can be
+pinned to multiple query points (denser sampling of forecast tiles within the
+same city), so City is no longer sufficient to disambiguate a row on its own —
+see City under Metadata Fields below. RequestedLatitude/RequestedLongitude is
+what carries that disambiguating role now.
+  - Eventually Source will probably need to join the key too (once a second
+    data source is added, the same requested point/forecast moment could be
+    reported by more than one provider). Not a concern yet with a single source
+    in use — noting it here so it isn't forgotten later, not addressing it now.
+    ResolvedLatitude / ResolvedLongitude — the coordinates the API actually
+    resolved the forecast to (returned in the response — the API snaps a
+    requested point to its nearest grid tile/station, which is not guaranteed
+    to be the exact point requested). Added to the key alongside
+    RequestedLatitude/RequestedLongitude so downstream analysis can measure
+    forecast accuracy against the tile the data really came from, rather than
+    assuming resolution == the point requested. This also lets later analysis
+    notice when multiple nearby Requested points collapse onto the same
+    Resolved tile, or the reverse. ReportDateTime — when this specific forecast
+    was pulled, expressed as the intended cron slot (e.g.
+    00:00/04:00/08:00/...), not the literal wall-clock moment a request
+    happened to complete. The API does not provide a generation timestamp
+    (confirmed — see Known Gaps), so the original plan of keying off the API's
+    own generation time isn't available. Computed once per pipeline run in
+    Pipeline.py, before the location loop starts and before any retries — every
+    location and every retry attempt in that run reads the same value. This
+    recovers the same retry-safety property the API-timestamp approach was
+    meant to provide: a failed request retried within the same scheduled slot
+    collides on the same ReportDateTime instead of producing a second row for
+    what's actually the same intended observation. The value is computed in
+    Pipeline.py, but attaching it to rows still happens in Transform, alongside
+    Source/Locale, via the metadata dict (see Metadata Fields / Layer
+    Responsibilities below) — kept there so all metadata enrichment stays in
+    one place rather than being split across files. ForecastDateTime — the
+    future date/time this forecast row is about (renamed from an earlier
+    Date/Time draft for clarity, since plain Date/Time was ambiguous next to
+    ReportDateTime).
 
-Originally split into separate ForecastDate/ForecastTime columns for query-ergonomics reasons (rolling up by date alone or time alone without parsing). Revisited and collapsed back into a single ForecastDateTime column: BigQuery's native datetime functions (DATE(), EXTRACT(HOUR FROM ...), etc.) roll up by day or by hour directly off a combined datetime column with no parsing cost, so the split bought nothing once the raw layer is known to land in BigQuery specifically. A combined field also mirrors ReportDateTime's shape, which is itself a datetime.
+Originally split into separate ForecastDate/ForecastTime columns for
+query-ergonomics reasons (rolling up by date alone or time alone without
+parsing). Revisited and collapsed back into a single ForecastDateTime column:
+BigQuery's native datetime functions (DATE(), EXTRACT(HOUR FROM ...), etc.)
+roll up by day or by hour directly off a combined datetime column with no
+parsing cost, so the split bought nothing once the raw layer is known to land
+in BigQuery specifically. A combined field also mirrors ReportDateTime's shape,
+which is itself a datetime.
 
-No timestamp rounding on ForecastDateTime — captured at whatever precision the API's hourly grid provides. ReportDateTime is the one deliberate exception: it's intentionally snapped to the scheduled cron slot rather than raw pull precision, specifically for the retry-collision property described above. Otherwise the pipeline is expected to be lightweight and fast, so this isn't expected to cause meaningful key bloat or performance issues.
+No timestamp rounding on ForecastDateTime — captured at whatever precision the
+API's hourly grid provides. ReportDateTime is the one deliberate exception:
+it's intentionally snapped to the scheduled cron slot rather than raw pull
+precision, specifically for the retry-collision property described above.
+Otherwise the pipeline is expected to be lightweight and fast, so this isn't
+expected to cause meaningful key bloat or performance issues.
 
 Partitioning & Clustering (Not Yet Decided)
 
-Distinct from the logical primary key above (which just documents what makes a row unique — order there is narrative, not physical). Partitioning and clustering are a separate BigQuery physical-layout decision that determines query performance, and hasn't been made yet.
+Distinct from the logical primary key above (which just documents what makes a
+row unique — order there is narrative, not physical). Partitioning and
+clustering are a separate BigQuery physical-layout decision that determines
+query performance, and hasn't been made yet.
 
-Leaning toward: partition on DATE(ReportDateTime), cluster with ReportDateTime leading the clustering key, since "get the latest report" and time-range-bounded queries are expected to be the dominant access pattern (same reasoning as the prior sales-attribution pipeline this project mirrors). Not committing to this yet — TODO: revisit once there's real query traffic/patterns to design around, rather than guessing upfront.
+Leaning toward: partition on DATE(ReportDateTime), cluster with ReportDateTime
+leading the clustering key, since "get the latest report" and
+time-range-bounded queries are expected to be the dominant access pattern (same
+reasoning as the prior sales-attribution pipeline this project mirrors). Not
+committing to this yet — TODO: revisit once there's real query traffic/patterns
+to design around, rather than guessing upfront.
 
 Metadata Fields
 
-Passed into the transform step as a metadata dict (not just a single scalar), since more than one pull-level field is expected over time:
+Passed into the transform step as a metadata dict (not just a single scalar),
+since more than one pull-level field is expected over time:
 
-ReportDateTime — see above
-Source — which API/provider the data came from. Anticipates a future where multiple weather data sources are compared against each other.
-Locale — captured for future-proofing (e.g. multi-source, multi-region expansion) even though only a single locale is in use today. Low priority to build real logic around until a second source/locale is actually added — for now it's effectively a constant value on every row.
+ReportDateTime — see above Source — which API/provider the data came from.
+Anticipates a future where multiple weather data sources are compared against
+each other. Locale — captured for future-proofing (e.g. multi-source,
+multi-region expansion) even though only a single locale is in use today. Low
+priority to build real logic around until a second source/locale is actually
+added — for now it's effectively a constant value on every row.
 
 Descriptive (Non-Key) Location Fields
 
-City — a human-readable label for a requested point (e.g. "Elk Grove, CA"). No longer part of the primary key: since a city can be pinned to multiple RequestedLatitude/RequestedLongitude points, City is many-to-one against the key and can't uniquely identify a row on its own. Kept as a descriptive column for readability and for rolling multiple pinned points up to a common city in downstream queries.
-Elevation — the elevation the API resolved at ResolvedLatitude/ResolvedLongitude. Descriptive, not key — carried alongside the resolved coordinates for context, not disambiguation.
+City — a human-readable label for a requested point (e.g. "Elk Grove, CA"). No
+longer part of the primary key: since a city can be pinned to multiple
+RequestedLatitude/RequestedLongitude points, City is many-to-one against the
+key and can't uniquely identify a row on its own. Kept as a descriptive column
+for readability and for rolling multiple pinned points up to a common city in
+downstream queries. Elevation — the elevation the API resolved at
+ResolvedLatitude/ResolvedLongitude. Descriptive, not key — carried alongside
+the resolved coordinates for context, not disambiguation.
 
 Layer Responsibilities (Raw vs. Transform Separation)
 
-Deliberate separation, modeled on the medallion/staging-vs-marts pattern used in tools like dbt:
+Deliberate separation, modeled on the medallion/staging-vs-marts pattern used
+in tools like dbt:
 
-Extract — pulls raw data from the API only. No transformation logic.
-Transform — field name normalization (API's raw names → project schema, e.g. temperature → Temperature), metadata enrichment (attaching ReportDateTime/Source/Locale), and type enforcement (ensuring numeric fields aren't left as strings, handling nulls). Explicitly no computed/derived fields at this layer (e.g. no lead-time calculation, no accuracy scoring).
-Load — writes the transformed DataFrame into BigQuery via google-cloud-bigquery's load_table_from_dataframe().
+Extract — pulls raw data from the API only. No transformation logic. Transform
+— field name normalization (API's raw names → project schema, e.g. temperature
+→ Temperature), metadata enrichment (attaching ReportDateTime/Source/Locale),
+and type enforcement (ensuring numeric fields aren't left as strings, handling
+nulls). Explicitly no computed/derived fields at this layer (e.g. no lead-time
+calculation, no accuracy scoring). Load — writes the transformed DataFrame into
+BigQuery via google-cloud-bigquery's load_table_from_dataframe().
 
-Why keep computed fields out of ingestion: coupling extract/transform logic to a specific analysis (e.g. "hours ahead of forecast") means any new analytical question later would require re-pulling or backfilling data. Landing raw, unprocessed values keeps the raw table reusable for whatever questions come up later. All derived analysis (accuracy by lead time, by time-of-day, by season, etc.) is intended to happen downstream in BigQuery/dbt SQL, not in Python at ingestion time. Any future translation/localization logic (if Locale ever becomes more than a placeholder) would follow the same rule — handled via SQL downstream, not in the transform step.
+Why keep computed fields out of ingestion: coupling extract/transform logic to
+a specific analysis (e.g. "hours ahead of forecast") means any new analytical
+question later would require re-pulling or backfilling data. Landing raw,
+unprocessed values keeps the raw table reusable for whatever questions come up
+later. All derived analysis (accuracy by lead time, by time-of-day, by season,
+etc.) is intended to happen downstream in BigQuery/dbt SQL, not in Python at
+ingestion time. Any future translation/localization logic (if Locale ever
+becomes more than a placeholder) would follow the same rule — handled via SQL
+downstream, not in the transform step.
 
 Duplicate / Repeat Observations (Not Deduplicated At Ingestion)
 
-A successful pull that returns the same values as the previous pull for a location is still landed as its own row — the pipeline does not compare against prior data or skip/collapse repeats at Extract/Transform/Load time. This follows directly from the append-only principle above: an unchanged forecast is still a real observation ("we checked again and it hadn't changed yet"), not noise to filter out. Deciding whether/how to treat repeats as meaningful (e.g. measuring forecast stability, or collapsing consecutive identical values for display) is deferred to downstream BigQuery/SQL — e.g. a LAG() window function partitioned by RequestedLatitude/RequestedLongitude/ResolvedLatitude/ResolvedLongitude/ForecastDateTime and ordered by ReportDateTime can identify or collapse runs of identical values whenever that question actually comes up. Ingestion doesn't need to know or care.
+A successful pull that returns the same values as the previous pull for a
+location is still landed as its own row — the pipeline does not compare against
+prior data or skip/collapse repeats at Extract/Transform/Load time. This
+follows directly from the append-only principle above: an unchanged forecast is
+still a real observation ("we checked again and it hadn't changed yet"), not
+noise to filter out. Deciding whether/how to treat repeats as meaningful (e.g.
+measuring forecast stability, or collapsing consecutive identical values for
+display) is deferred to downstream BigQuery/SQL — e.g. a LAG() window function
+partitioned by
+RequestedLatitude/RequestedLongitude/ResolvedLatitude/ResolvedLongitude/ForecastDateTime
+and ordered by ReportDateTime can identify or collapse runs of identical values
+whenever that question actually comes up. Ingestion doesn't need to know or
+care.
 
-This also simplifies retry handling: a failed pull (non-200 response) is never appended to Extract's result list, so it contributes zero row candidates — a failure followed by a successful retry produces exactly one row, not two. The only case that could produce a genuine same-generation duplicate is two separate successful pulls landing before the underlying report has actually changed; the ReportDateTime cron-slot snap (see Schema Design above) collapses that case when it's a retry within the same scheduled slot, and any other case is accepted as legitimate data per this section.
+This also simplifies retry handling: a failed pull (non-200 response) is never
+appended to Extract's result list, so it contributes zero row candidates — a
+failure followed by a successful retry produces exactly one row, not two. The
+only case that could produce a genuine same-generation duplicate is two
+separate successful pulls landing before the underlying report has actually
+changed; the ReportDateTime cron-slot snap (see Schema Design above) collapses
+that case when it's a retry within the same scheduled slot, and any other case
+is accepted as legitimate data per this section.
 
-Why the LAG() partition above isn't collapsed to ResolvedLatitude/ResolvedLongitude alone: it's tempting, since the forecast values are physically determined by the resolved tile, not the requested point — so two different cities pinned to the same station would produce byte-identical hourly values, and partitioning on Resolved-only would surface that automatically as a side effect of dedup. Rejected anyway, because it conflates two different questions. "Did this city's forecast change since the last pull" is a per-pin question — collapsing the partition would mean any city sharing a station with another pin loses its own city-level view, and you'd only ever discover station-sharing by accident. "Which cities happen to resolve to the same physical station" is a separate structural question about the data, and belongs downstream as its own query (e.g. GROUP BY ResolvedLatitude, ResolvedLongitude HAVING COUNT(DISTINCT City) > 1), not folded into how repeats get detected. Keeping City in the row grain also means that query — and the everyday case of just filtering by city name — stays a string match instead of forcing an esoteric float comparison. Same "land raw, ask questions later" philosophy as the rest of this section: station-sharing is a data claim to be made by querying the warehouse, not a decision to bake into ingestion.
+Why the LAG() partition above isn't collapsed to
+ResolvedLatitude/ResolvedLongitude alone: it's tempting, since the forecast
+values are physically determined by the resolved tile, not the requested point
+— so two different cities pinned to the same station would produce
+byte-identical hourly values, and partitioning on Resolved-only would surface
+that automatically as a side effect of dedup. Rejected anyway, because it
+conflates two different questions. "Did this city's forecast change since the
+last pull" is a per-pin question — collapsing the partition would mean any city
+sharing a station with another pin loses its own city-level view, and you'd
+only ever discover station-sharing by accident. "Which cities happen to resolve
+to the same physical station" is a separate structural question about the data,
+and belongs downstream as its own query (e.g. GROUP BY ResolvedLatitude,
+ResolvedLongitude HAVING COUNT(DISTINCT City) > 1), not folded into how repeats
+get detected. Keeping City in the row grain also means that query — and the
+everyday case of just filtering by city name — stays a string match instead of
+forcing an esoteric float comparison. Same "land raw, ask questions later"
+philosophy as the rest of this section: station-sharing is a data claim to be
+made by querying the warehouse, not a decision to bake into ingestion.
 
-Known Gaps / Things To Verify
-Confirmed: Open-Meteo does not return a generation timestamp in its response. Original plan was to key ReportDateTime off the API's own generation time for retry-safety; resolved instead by snapping ReportDateTime to the scheduled cron slot (see Schema Design above), so retry-safety no longer depends on anything the API provides.
-Resolved: cron-slot rounding is a floor to the top of the hour (Pipeline.py: now.replace(minute=0, second=0, microsecond=0)), and the crontab entry runs at minute 0 of every hour (0 * * * *), so the two now agree — no drift concern from a mismatched schedule/rounding granularity.
-Confirm API auth requirements before writing extract.py (most weather APIs require at least a free API key, even without full OAuth).
-Fixed: Extract.get_forecast previously left res unassigned on a non-200 response, so a failed API call raised UnboundLocalError on return res instead of returning None — meaning the documented "a failed pull contributes zero row candidates" behavior didn't actually hold; a single flaky response would crash the entire hourly run rather than being skipped. Fixed by initializing res = None before the status check.
-Fixed: ReportDateTime was typed DATETIME (BigQuery's tz-naive civil type) while Pipeline.py produces it as a tz-aware UTC value (datetime.now(timezone.utc)). Round-tripping through BigQuery meant Load.load() compared a tz-aware in-memory value (incoming_date_time, read straight off the DataFrame before load) against a tz-naive value read back from BigQuery (last_loaded) — raising "Cannot subtract tz-naive and tz-aware datetime-like objects" on every city's second-and-later load. This was silent per city rather than run-crashing because of the fail-soft change above, which made it easy to miss: every city just stopped loading new rows after its first one, logged but not raised. Fixed by changing ReportDateTime to TIMESTAMP in WeatherForecastAnalyzer.json (a real tz-aware BigQuery type) rather than stripping tzinfo in Python, since the value is semantically an absolute UTC instant, not a civil wall-clock reading — same reasoning ForecastDateTime doesn't need (it's built via strptime with no tzinfo, so it was already consistent with its DATETIME column). Required dropping and recreating the forecast table, since BigQuery doesn't support in-place column type changes. ForecastDateTime was changed to TIMESTAMP in the same pass, even though it wasn't implicated in this particular bug (it's never read back into Python for comparison, so no naive/aware mismatch was possible there) — kept it aligned with ReportDateTime because the project's core lead-time calculation (ForecastDateTime - ReportDateTime, see Core Hypothesis above) happens downstream in BigQuery SQL, and BigQuery requires matching types (TIMESTAMP vs TIMESTAMP, not TIMESTAMP vs DATETIME) to diff two datetime columns without an explicit cast at every query site. Transform.py's strptime call still produces a naive datetime for this field; loading a naive value into a TIMESTAMP column is standard BigQuery client behavior — it's interpreted as already being UTC, which matches reality since Extract.py requests the API in UTC.
-Decision: Load.load() was changed from fail-fast to fail-soft per city. Previously, an exception loading any one city's DataFrame into BigQuery (or querying its latest ReportDateTime) re-raised and aborted the whole run, silently skipping every city later in the locations list that cycle. Now each city's block is wrapped individually — a failure is logged (Unable to load city {city}: {e}) and the loop continues to the next city, so one city's BQ/query failure no longer costs other cities their hourly load. Tradeoff accepted deliberately: failures are now easy to miss unless the logs are read, since nothing raises out of a fully-failed run. Revisit if that turns out to matter (e.g. add a summary/alert on partial failure) once there's real log history to judge frequency against.
-Future Expansion (Not In Scope For V1)
-Compare multiple weather data sources against each other (accuracy, agreement/disagreement).
-Break down forecast accuracy by time-of-day, season, resolved tile, and location (now that Requested vs. Resolved coordinates are captured separately in the key).
-Correlate accuracy with instrument/equipment metadata (station age, brand, sensor height/type) via dimension tables — moves the project from "pulled some weather data" toward "evaluates forecast reliability across sources and conditions.
+Known Gaps / Things To Verify Confirmed: Open-Meteo does not return a
+generation timestamp in its response. Original plan was to key ReportDateTime
+off the API's own generation time for retry-safety; resolved instead by
+snapping ReportDateTime to the scheduled cron slot (see Schema Design above),
+so retry-safety no longer depends on anything the API provides. Resolved:
+cron-slot rounding is a floor to the top of the hour (Pipeline.py:
+now.replace(minute=0, second=0, microsecond=0)), and the crontab entry runs at
+minute 0 of every hour (0 * * * *), so the two now agree — no drift concern
+from a mismatched schedule/rounding granularity. Confirm API auth requirements
+before writing extract.py (most weather APIs require at least a free API key,
+even without full OAuth). Fixed: Extract.get_forecast previously left res
+unassigned on a non-200 response, so a failed API call raised UnboundLocalError
+on return res instead of returning None — meaning the documented "a failed pull
+contributes zero row candidates" behavior didn't actually hold; a single flaky
+response would crash the entire hourly run rather than being skipped. Fixed by
+initializing res = None before the status check. Fixed: ReportDateTime was
+typed DATETIME (BigQuery's tz-naive civil type) while Pipeline.py produces it
+as a tz-aware UTC value (datetime.now(timezone.utc)). Round-tripping through
+BigQuery meant Load.load() compared a tz-aware in-memory value
+(incoming_date_time, read straight off the DataFrame before load) against a
+tz-naive value read back from BigQuery (last_loaded) — raising "Cannot subtract
+tz-naive and tz-aware datetime-like objects" on every city's second-and-later
+load. This was silent per city rather than run-crashing because of the
+fail-soft change above, which made it easy to miss: every city just stopped
+loading new rows after its first one, logged but not raised. Fixed by changing
+ReportDateTime to TIMESTAMP in WeatherForecastAnalyzer.json (a real tz-aware
+BigQuery type) rather than stripping tzinfo in Python, since the value is
+semantically an absolute UTC instant, not a civil wall-clock reading — same
+reasoning ForecastDateTime doesn't need (it's built via strptime with no
+tzinfo, so it was already consistent with its DATETIME column). Required
+dropping and recreating the forecast table, since BigQuery doesn't support
+in-place column type changes. ForecastDateTime was changed to TIMESTAMP in the
+same pass, even though it wasn't implicated in this particular bug (it's never
+read back into Python for comparison, so no naive/aware mismatch was possible
+there) — kept it aligned with ReportDateTime because the project's core
+lead-time calculation (ForecastDateTime - ReportDateTime, see Core Hypothesis
+above) happens downstream in BigQuery SQL, and BigQuery requires matching types
+(TIMESTAMP vs TIMESTAMP, not TIMESTAMP vs DATETIME) to diff two datetime
+columns without an explicit cast at every query site. Transform.py's strptime
+call still produces a naive datetime for this field; loading a naive value into
+a TIMESTAMP column is standard BigQuery client behavior — it's interpreted as
+already being UTC, which matches reality since Extract.py requests the API in
+UTC. Decision: Load.load() was changed from fail-fast to fail-soft per city.
+Previously, an exception loading any one city's DataFrame into BigQuery (or
+querying its latest ReportDateTime) re-raised and aborted the whole run,
+silently skipping every city later in the locations list that cycle. Now each
+city's block is wrapped individually — a failure is logged (Unable to load city
+{city}: {e}) and the loop continues to the next city, so one city's BQ/query
+failure no longer costs other cities their hourly load. Tradeoff accepted
+deliberately: failures are now easy to miss unless the logs are read, since
+nothing raises out of a fully-failed run. Revisit if that turns out to matter
+(e.g. add a summary/alert on partial failure) once there's real log history to
+judge frequency against. Future Expansion (Not In Scope For V1) Compare
+multiple weather data sources against each other (accuracy,
+agreement/disagreement). Break down forecast accuracy by time-of-day, season,
+resolved tile, and location (now that Requested vs. Resolved coordinates are
+captured separately in the key). Correlate accuracy with instrument/equipment
+metadata (station age, brand, sensor height/type) via dimension tables — moves
+the project from "pulled some weather data" toward "evaluates forecast
+reliability across sources and conditions.
