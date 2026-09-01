@@ -1,11 +1,6 @@
 from datetime import datetime, timezone
+from Paths import script_dir, drop_dir, archive_dir
 import json, os, shutil
-
-# get a handle on the drop/archived directories we may end up writing to
-
-script_dir  = os.path.dirname(os.path.abspath(__file__))
-drop_dir    = os.path.join(script_dir, "drop")
-archive_dir = os.path.join(script_dir, "archived")
 
 os.makedirs(drop_dir, exist_ok=True)
 os.makedirs(archive_dir, exist_ok=True)

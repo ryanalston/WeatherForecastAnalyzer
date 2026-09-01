@@ -27,6 +27,7 @@ def get_forecast( location ):
         
     print(f" querying api against: {location['city']}")
     r = requests.get( endpoint, params )
+    res = None
     if(r.status_code != 200):
         print(f"  api returned: {r.status_code}")
     elif(r.status_code == 200):

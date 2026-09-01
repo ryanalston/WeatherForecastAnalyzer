@@ -1,4 +1,8 @@
-import pandas as pd, json
+import pandas as pd, json, os
+from Paths import script_dir
+from datetime import datetime
+
+field_translations  = os.path.join(script_dir, "FieldTranslations.json")
 
 def transform_shape( location_forecasts, metadata ):
     # capture report gen time and parse location_forecasts into result
@@ -17,6 +21,7 @@ def transform_shape( location_forecasts, metadata ):
                 row["resolved_latitude"]    = location["resolved_latitude"]
                 row["resolved_longitude"]   = location["resolved_longitude"]
                 row["elevation"]            = location["elevation"]
+                row['time']                 = datetime.strptime(row['time'], "%Y-%m-%dT%H:%M")
                 row["report_date_time"]     = cron_top_of_hour
                 result.append(row)
         except (KeyError, IndexError) as e:
@@ -28,7 +33,7 @@ def transform_shape( location_forecasts, metadata ):
    
     # we need to convert the field names in the df to BQ ready names
     try:
-        with open("FieldTranslations.json") as f:
+        with open(field_translations) as f:
             field_map = json.load(f)
     except FileNotFoundError as e:
         print(f" Field Translation file not found: {e}")
