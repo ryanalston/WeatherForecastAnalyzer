@@ -1,6 +1,6 @@
 [
-	{"name": "ReportDateTime", 	"type": "DATETIME", 		"mode": "REQUIRED"},
-	{"name": "ForecastDateTime", 	"type": "DATETIME", 		"mode": "REQUIRED"},
+	{"name": "ReportDateTime", 	"type": "TIMESTAMP", 		"mode": "REQUIRED"},
+	{"name": "ForecastDateTime", 	"type": "TIMESTAMP", 		"mode": "REQUIRED"},
 	{"name": "RequestedLatitude", 	"type": "FLOAT", 		"mode": "REQUIRED"},
 	{"name": "RequestedLongitude", 	"type": "FLOAT", 		"mode": "REQUIRED"},
 	{"name": "ResolvedLatitude", 	"type": "FLOAT", 		"mode": "REQUIRED"},
