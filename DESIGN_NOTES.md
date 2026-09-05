@@ -258,3 +258,48 @@ captured separately in the key). Correlate accuracy with instrument/equipment
 metadata (station age, brand, sensor height/type) via dimension tables — moves
 the project from "pulled some weather data" toward "evaluates forecast
 reliability across sources and conditions.
+
+Planned Expansion: Actual-Weather Comparison via dbt + BI Tool (Not Started)
+
+Distinct from the "compare multiple data sources" bullet above (which compares
+forecast providers against each other). This is a different comparison:
+a single provider's forecast against what actually happened, from the same
+provider. It doesn't require a second forecast source to be useful, and it's a
+stronger accuracy signal than forecast-vs-forecast convergence, since it checks
+predictions against ground truth rather than just watching whether a value
+stopped changing.
+
+Shape of the idea: land a second raw table, raw.actual (or similar), capturing
+observed/historical weather per location -- likely via Open-Meteo's historical
+weather/archive endpoint, reusing the existing Extract -> Transform -> Load
+skeleton (same layer separation, different endpoint and response shape). This
+sits alongside the existing raw.forecast table without changing it.
+
+The join/derivation work -- matching a forecast row to the actual observation
+for the same ResolvedLatitude/ResolvedLongitude/ForecastDateTime, computing a
+per-metric shift (actual minus forecast) and the lead time
+(ForecastDateTime - ReportDateTime) -- is intended to live in dbt, staged on
+top of the two raw BigQuery tables rather than in Python. This is the concrete
+implementation of the "downstream in BigQuery/dbt SQL" principle already
+stated under Layer Responsibilities above, not a new architectural direction.
+Staging models normalize each raw table; a mart model (something like
+fct_forecast_accuracy) does the join and produces the shift/lead-time columns
+a BI tool would query directly.
+
+A BI tool (Power BI, Tableau, or Looker Studio -- not yet decided, see below)
+would sit on top of that mart, letting the shift be segmented by city, metric,
+and time frame (lead-time bucket, hour-of-day, season). Grain of the mart
+(long: one row per location/ForecastDateTime/ReportDateTime/metric, vs. wide:
+one row per location/ForecastDateTime/ReportDateTime with a delta column per
+metric) is also undecided -- pick when the mart is actually built, once real
+query/viz patterns are known, same reasoning as the Partitioning & Clustering
+section above.
+
+BI tool choice deliberately left open, same status as the partitioning
+decision: Looker Studio is the lowest-friction option (free, native BigQuery
+connector), Power BI/Tableau are heavier but may be worth it depending on
+which roles the finished project is meant to speak to on a resume -- this
+project is partly chosen to build hands-on breadth in dbt and a
+visualization tool, on top of the original ETL learning goal (see README
+Project Inception), so tool choice should factor that in when it's actually
+made rather than defaulting to whichever is easiest to wire up.

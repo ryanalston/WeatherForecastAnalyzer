@@ -81,3 +81,11 @@ Runs hourly via crontab, logging to logs/ (gitignored):
 
 Locations list currently lives inline in Pipeline.py (todo: move to a config
 file).
+
+Planned Expansion
+
+Not yet started: a second raw table for actual/observed weather (ground
+truth, not forecasts), a dbt layer joining it against raw.forecast to compute
+forecast-vs-actual shift by lead time, and a BI tool (Power BI/Tableau/Looker
+Studio, undecided) on top of that for city/metric/time-frame segmentation.
+See DESIGN_NOTES.md's "Planned Expansion" section for the reasoning.
