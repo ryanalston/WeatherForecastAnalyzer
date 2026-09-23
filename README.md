@@ -9,9 +9,9 @@ For the full rationale behind the schema, key design, and tradeoffs, see
 DESIGN_NOTES.md. This file is a quick orientation/runbook, not the design doc.
 
 All code in this project was written independently as a hands-on learning
-excersise.  Claude was used in a code-review and debugging-partner role
-thoughout.  It was responsible for catching bugs, questioning design
-descisions, and explaining concepts, but didn't write the implementation.  This
+exercise.  Claude was used in a code-review and debugging-partner role
+throughout.  It was responsible for catching bugs, questioning design
+decisions, and explaining concepts, but didn't write the implementation.  This
 README and DESIGN_NOTES.md were drafted with Claude's assistance, based on
 design decisions made during development.
 
@@ -36,23 +36,13 @@ Runs hourly via cron, driven end-to-end by Pipeline.py:
 
 File Responsibilities
 
-  Paths.py     - central place for script_dir, drop_dir, archive_dir so every
-  module resolves paths the same way regardless of cwd (needed since cron
-  doesn't run with the script's directory as cwd). Extract.py   - pulls raw
-  forecast data from the Open-Meteo API. No transformation logic. Returns None
-  on a non-200 response so a single location failure doesn't take down the
-  whole run. Archive.py   - drop/archived file management. Writes the raw
-  per-city pull to drop/ immediately after extract, then moves it to archived/
-  once that city's data is successfully loaded. Transform.py - field name
-  normalization (API names -> schema names), metadata enrichment (attaches
-  ReportDateTime from the cron-slot metadata), type enforcement. Deliberately
-  no computed/derived fields -- see DESIGN_NOTES.md "Layer Responsibilities".
-  Load.py      - ensures the BigQuery table exists (via
-  WeatherForecastAnalyzer.json schema) and writes the transformed DataFrame
-  into it. SetupDW.py   - one-time setup: creates the BigQuery dataset. Run
-  manually, not part of the hourly pipeline. Pipeline.py  - orchestrates the
-  run: computes the cron-slot ReportDateTime, loops locations through Extract
-  -> Archive -> collects results, then runs a single Transform + Load pass.
+  - Paths.py - central place for script_dir, drop_dir, archive_dir so every module resolves paths the same way regardless of cwd (needed since cron doesn't run with the script's directory as cwd).
+  - Extract.py - pulls raw forecast data from the Open-Meteo API. No transformation logic. Returns None on a non-200 response so a single location failure doesn't take down the whole run.
+  - Archive.py - drop/archived file management. Writes the raw per-city pull to drop/ immediately after extract, then moves it to archived/ once that city's data is successfully loaded.
+  - Transform.py - field name normalization (API names -> schema names), metadata enrichment (attaches ReportDateTime from the cron-slot metadata), type enforcement. Deliberately no computed/derived fields -- see DESIGN_NOTES.md "Layer Responsibilities".
+  - Load.py - ensures the BigQuery table exists (via WeatherForecastAnalyzer.json schema) and writes the transformed DataFrame into it.
+  - SetupDW.py - one-time setup: creates the BigQuery dataset. Run manually, not part of the hourly pipeline.
+  - Pipeline.py - orchestrates the run: computes the cron-slot ReportDateTime, loops locations through Extract -> Archive -> collects results, then runs a single Transform + Load pass.
 
 Table Schema
 
