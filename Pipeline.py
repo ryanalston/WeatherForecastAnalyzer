@@ -26,7 +26,7 @@ locations = [
         { "city" : "Kansas City, KS", "latitude" : 39.1142, "longitude" : -94.6275 },
         { "city" : "Lakewood Ranch, FL", "latitude" : 27.42648, "longitude" : -82.37609 },
         { "city" : "New York City, NY", "latitude" : 40.71453, "longitude" : -74.00172 },
-        { "city" : "Porto, Portugal", "latitude" : 41.1496, "longitude" : 8.61099 },
+        { "city" : "Porto, Portugal", "latitude" : 41.1496, "longitude" : -8.61099 },
         { "city" : "Cebu City, Philippines", "latitude" : 10.3167, "longitude" : 123.8907 },
         ]
 
