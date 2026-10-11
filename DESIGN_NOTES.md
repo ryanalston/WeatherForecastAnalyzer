@@ -162,6 +162,11 @@ Known Gaps / Things To Verify
 - Decision: Load.load() was changed from fail-fast to fail-soft per city. Previously, an exception loading any one city's DataFrame into BigQuery (or querying its latest ReportDateTime) re-raised and aborted the whole run, silently skipping every city later in the locations list that cycle. Now each city's block is wrapped individually — a failure is logged (Unable to load city {city}: {e}) and the loop continues to the next city, so one city's BQ/query failure no longer costs other cities their hourly load. Tradeoff accepted deliberately: failures are now easy to miss unless the logs are read, since nothing raises out of a fully-failed run. Revisit if that turns out to matter (e.g. add a summary/alert on partial failure) once there's real log history to judge frequency against.
 - Fixed: Porto, Portugal longitude was incorrectly setup, causing data to be pulled for a different area: "Gulf of Asinara, Sardinia", flipped the sign on longitude, and updated BQ table for dates: 2026-08-31 to 2026-10-10 changing only label of field City for 131,544 rows
 - Observed: on 2026-10-06 13:00 UTC it appears the resolved longitude changed for the misconfigured Portugal location, changing from 8.625 to 8.6404085, as well as resolved latitude from 41.125 to 41.147305 for Gulf of Asinara, Sardinia
+- Fixed: hours were silently missing for whichever city came first in the locations list. pipeline.log showed 152 "api returned: 503" lines through 2026-10-10, ranked by list position: Elk Grove (1st) 94, San Jose (2nd) 24, Los Angeles (3rd) 12, the rest in single digits. Open-Meteo turns away the first requests that arrive exactly at :00, when scheduled jobs everywhere fire at once, and Extract made a single attempt, so the first city lost that hour (Elk Grove was 91 runs behind the best-covered city). Fixed by sending requests through a requests.Session with urllib3 Retry: 5 retries on 429/5xx with exponential backoff and jitter (waits of roughly 0, 4, 8, 16, 32s, so about a minute worst case per city), plus timeout=10 on every request, since requests has no default timeout and a hung connection would otherwise stall the hourly run indefinitely. A request that still fails after the retries is logged and skipped, same as before.
+- Decision: actuals are ERA5T, ERA5's preliminary release (about 5 days behind real time). ECMWF replaces it with final ERA5 roughly 2-3 months later, usually with small or no changes. The actuals pipeline does not re-pull already-loaded hours, so raw.actual keeps the preliminary values. Accepted for now; a periodic re-pull of old ranges plus "latest LoadedDateTime wins" in dbt would pick up revisions if they ever matter.
+- Observed: forecast and actual values describe different-sized areas. The forecast resolves to squares about 2-3 km wide (resolved points land 1-2 km from the requested pins in the US, about 5 km for Cebu), while era5_seamless uses a 0.1 degree grid (about 10 km; resolved points land 1.6-6.7 km from the US pins and 15 km from Cebu). Part of any measured forecast error is therefore area mismatch rather than forecast skill, most likely where weather changes over short distances (coastline and terrain: Los Angeles, San Jose, Porto, Cebu). Elevations returned by the two APIs match exactly for every pin, so temperature isn't skewed by height differences.
+- Observed: ERA5 resolved coordinates carry float32 rounding noise (e.g. 30.300003 for 30.3, -121.399994 for -121.4). Never compare them with =; round to one decimal if grouping by ERA5 square. Requested coordinates are exact (they come from Locations.json).
+- Observed: the Gulf of Asinara forecast rows (the pre-fix Porto pin) have no matching actuals, since actuals were only ever pulled for the corrected Porto coordinates, so those rows drop out of any forecast-vs-actual join. Porto's actuals start 2026-08-31 at the correct location, while its forecasts start 2026-10-11 00:00 UTC.
 
 Future Expansion (Not In Scope For V1)
 
@@ -169,7 +174,7 @@ Future Expansion (Not In Scope For V1)
 - Break down forecast accuracy by time-of-day, season, resolved tile, and location (now that Requested vs. Resolved coordinates are captured separately in the key).
 - Correlate accuracy with instrument/equipment metadata (station age, brand, sensor height/type) via dimension tables — moves the project from "pulled some weather data" toward "evaluates forecast reliability across sources and conditions."
 
-Planned Expansion: Actual-Weather Comparison via dbt + BI Tool (Not Started)
+Planned Expansion: Actual-Weather Comparison via dbt + BI Tool (Ingest Built 2026-10-10; dbt Not Started)
 
 Distinct from the "compare multiple data sources" bullet above (which compares
 forecast providers against each other). This is a different comparison:
@@ -179,15 +184,16 @@ stronger accuracy signal than forecast-vs-forecast convergence, since it checks
 predictions against ground truth rather than just watching whether a value
 stopped changing.
 
-Shape of the idea: land a second raw table, raw.actual (or similar), capturing
-observed/historical weather per location -- likely via Open-Meteo's historical
-weather/archive endpoint, reusing the existing Extract -> Transform -> Load
-skeleton (same layer separation, different endpoint and response shape). This
-sits alongside the existing raw.forecast table without changing it.
+The ingest half is built: a second raw table, raw.actual, holds observed
+weather per location from Open-Meteo's archive endpoint, landed by a parallel
+PipelineActual.py that reuses the existing Extract -> Transform -> Load
+skeleton. It sits alongside raw.forecast without changing it. Design details
+are under "Actuals Ingest" below.
 
 The join/derivation work -- matching a forecast row to the actual observation
-for the same ResolvedLatitude/ResolvedLongitude/ForecastDateTime, computing a
-per-metric shift (actual minus forecast) and the lead time
+for the same RequestedLatitude/RequestedLongitude and hour (ForecastDateTime
+= ObservedDateTime; not the resolved coordinates, see "Actuals Ingest"),
+computing a per-metric shift (actual minus forecast) and the lead time
 (ForecastDateTime - ReportDateTime) -- is intended to live in dbt, staged on
 top of the two raw BigQuery tables rather than in Python. This is the concrete
 implementation of the "downstream in BigQuery/dbt SQL" principle already
@@ -213,3 +219,86 @@ project is partly chosen to build hands-on breadth in dbt and a
 visualization tool, on top of the original ETL learning goal (see README
 Project Inception), so tool choice should factor that in when it's actually
 made rather than defaulting to whichever is easiest to wire up.
+
+Actuals Ingest (Built 2026-10-10)
+
+Source: Open-Meteo's archive endpoint with models=era5_seamless pinned
+explicitly. ERA5 is a reanalysis: ECMWF reruns a weather model over the past
+and constrains it to every available measurement (stations, balloons,
+satellites, buoys), so it's the best gridded estimate of what actually
+happened. The model has to be pinned because the archive endpoint's default
+(best_match) fills the most recent days -- and even hours that haven't
+happened yet -- with forecast-model output. Unpinned, the "actuals" would
+partly be forecasts and the measured error would shrink toward zero for no
+real reason. era5_seamless was chosen over plain era5 for its finer grid
+(0.1 degree vs 0.25 degree); both run about 5-6 days behind real time.
+
+Join key: requested coordinates, never resolved. Neither API reads a weather
+station; both return values for a grid square, and the resolved coordinates
+are that square's center. The forecast and ERA5 use different grids with
+different square sizes, so their resolved points essentially never coincide
+(e.g. Lakewood Ranch: forecast 27.437/-82.389, ERA5 27.4/-82.4). The only
+thing the two tables share is the point that was asked about, so the dbt
+join matches RequestedLatitude/RequestedLongitude plus the hour. Resolved
+coordinates are still stored on both sides so the distance between the two
+squares can be measured later (see Known Gaps).
+
+Schema (ActualSchema.json): the same coordinate, City, Elevation and metric
+columns as raw.forecast, with the same names, so the dbt join reads cleanly.
+ObservedDateTime is the hour the weather is for. LoadedDateTime is when the
+row was loaded, and it is deliberately not part of the key. That's the
+difference from ReportDateTime: a forecast issued at 09:00 is a different
+fact from one issued at 15:00 for the same hour, so ReportDateTime is part of
+the data (and of the key). An observed temperature for a given hour is the
+same fact whichever day it's fetched, so LoadedDateTime is only bookkeeping.
+It's the exact load time, not snapped to an hour. Model records which ERA5
+variant produced the row (ExtractActual.MODEL, so the label can't drift from
+what was requested). Metric columns stay REQUIRED; a null reaching BigQuery
+fails the load, which is the alarm wanted rather than silently loading gaps.
+
+Incremental load (high-water mark): each run asks BigQuery, per location, for
+MAX(ObservedDateTime) at that location's requested coordinates (filtering on
+coordinates rather than City, since a label can be wrong -- see the Porto fix
+-- and via query parameters rather than string concatenation). It then
+requests from that hour's date through today (UTC; the API accepts today,
+and a future end_date is a 400), drops rows with nulls, drops rows at or
+before the high-water mark, and loads what's left. Consequences:
+- No fixed window and no separate backfill mode: an empty table means "start
+  at 2026-08-31", so the first run was the backfill (10 locations x 864
+  rows, 2026-08-31 00:00 to 2026-10-05 23:00 UTC).
+- ERA5's lag is never hardcoded. Hours ERA5 hasn't filled yet come back
+  null and are dropped, so the high-water mark only advances to the last
+  real hour; if the lag changes, nothing in the code does.
+- Days the PC was off heal themselves: the next run's range is simply longer.
+  (Forecast gaps can't heal this way -- a forecast that wasn't captured when
+  it was issued is gone -- but actuals can always be re-requested.)
+- Re-running is safe: a second run immediately after the backfill printed
+  "nothing new" for every location.
+ObservedDateTime is converted to UTC-aware before comparing with the
+high-water mark (BigQuery returns a tz-aware TIMESTAMP; Transform's strptime
+produces naive values), avoiding the tz-naive vs tz-aware error described in
+Known Gaps.
+
+No drop files for actuals. The forecast pipeline lands raw JSON in drop/
+because a forecast can't be fetched again once it's been superseded. ERA5 is
+a permanent historical archive, so any missing or suspect range can simply be
+pulled again; the drop/archive step would add overhead without protecting
+anything.
+
+Code reuse: rather than one generalized pipeline, there are two parallel
+pipelines sharing only what's identical, so a change on the actuals side
+can't break the hourly forecast job. ExtractActual imports Extract's session
+(same retry/timeout behavior) and weather_params (same 12 fields).
+Transform.transform_shape is shared: it now stamps every entry of the
+metadata dict the caller passes (forecast: report_date_time; actuals:
+loaded_date_time and model) and takes the field-translation file as a
+required argument (FieldTranslations.json vs ActualFieldTranslations.json),
+so it no longer knows anything forecast-specific. Before committing that
+change, the old and new transform_shape were run on archived forecast drop
+files from three runs (first run, mid-history, latest) and produced identical
+DataFrames (pandas assert_frame_equal). LoadActual reuses Load's BigQuery
+client and ensure_table; its load() has no one-hour skip rule. Each location
+is handled inside its own try/except in PipelineActual, so one location's
+failure is logged and the rest still run (same fail-soft tradeoff as
+forecast: read pipeline_actual.log). Locations live in Locations.json, read
+by PipelineActual (Pipeline.py still has its own inline copy for now).

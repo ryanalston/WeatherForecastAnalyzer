@@ -34,19 +34,46 @@ Runs hourly via cron, driven end-to-end by Pipeline.py:
      city is logged and skipped -- it does not block the rest of that run's
      cities.
 
+Actuals Pipeline Flow
+
+A second, independent pipeline, PipelineActual.py, lands observed weather
+(Open-Meteo's archive endpoint, ERA5 reanalysis via models=era5_seamless) into
+raw.actual, for comparing forecasts against what actually happened. It runs on
+its own schedule and doesn't touch the forecast pipeline. Per location:
+
+  1. LoadActual.get_high_water_mark finds the latest ObservedDateTime already
+     loaded for that location's requested coordinates (none on the first run,
+     which then starts at 2026-08-31 -- so the first run is the backfill).
+  2. ExtractActual.get_actual requests from that date through today (UTC).
+  3. Transform.py reshapes it exactly as for forecasts, using
+     ActualFieldTranslations.json and stamping LoadedDateTime and Model.
+  4. Rows with nulls (hours ERA5 hasn't filled yet; it runs ~5 days behind)
+     and rows at or before the high-water mark are dropped.
+  5. LoadActual.load writes what's left; if nothing is left, the location is
+     logged as "nothing new". A failing location is logged and skipped.
+
+No drop/archive step: ERA5 is a permanent archive, so anything missing can be
+pulled again. See DESIGN_NOTES.md "Actuals Ingest" for the reasoning.
+
 File Responsibilities
 
   - Paths.py - central place for script_dir, drop_dir, archive_dir so every module resolves paths the same way regardless of cwd (needed since cron doesn't run with the script's directory as cwd).
-  - Extract.py - pulls raw forecast data from the Open-Meteo API. No transformation logic. Returns None on a non-200 response so a single location failure doesn't take down the whole run.
+  - Extract.py - pulls raw forecast data from the Open-Meteo API. No transformation logic. Requests go through a shared requests.Session that retries 429/5xx responses with exponential backoff and jitter, with a 10s timeout per request. Returns None when a request still fails, so a single location failure doesn't take down the whole run.
   - Archive.py - drop/archived file management. Writes the raw per-city pull to drop/ immediately after extract, then moves it to archived/ once that city's data is successfully loaded.
-  - Transform.py - field name normalization (API names -> schema names), metadata enrichment (attaches ReportDateTime from the cron-slot metadata), type enforcement. Deliberately no computed/derived fields -- see DESIGN_NOTES.md "Layer Responsibilities".
+  - Transform.py - shared by both pipelines: flattens the hourly arrays into rows, stamps every entry of the metadata dict the caller passes (ReportDateTime for forecasts; LoadedDateTime and Model for actuals), and renames fields using the translation file the caller passes. Deliberately no computed/derived fields -- see DESIGN_NOTES.md "Layer Responsibilities".
   - Load.py - ensures the BigQuery table exists (via WeatherForecastAnalyzer.json schema) and writes the transformed DataFrame into it.
   - SetupDW.py - one-time setup: creates the BigQuery dataset. Run manually, not part of the hourly pipeline.
-  - Pipeline.py - orchestrates the run: computes the cron-slot ReportDateTime, loops locations through Extract -> Archive -> collects results, then runs a single Transform + Load pass.
+  - Pipeline.py - orchestrates the forecast run: computes the cron-slot ReportDateTime, loops locations through Extract -> Archive -> collects results, then runs a single Transform + Load pass.
+  - ExtractActual.py - pulls a date range of observed weather from Open-Meteo's archive endpoint (model pinned via MODEL), reusing Extract's session and field list. Returns the same shape as Extract.get_forecast so Transform can handle both.
+  - LoadActual.py - high-water-mark query (parameterized, keyed on requested coordinates) and the raw.actual load. Reuses Load's BigQuery client and ensure_table.
+  - PipelineActual.py - orchestrates the actuals run, one location at a time (see Actuals Pipeline Flow).
+  - Locations.json - the list of locations (city label + requested coordinates). Read by PipelineActual.py; Pipeline.py still has its own inline copy.
+  - ActualSchema.json / ActualFieldTranslations.json - raw.actual's schema and API-name -> column-name map (the forecast equivalents are WeatherForecastAnalyzer.json and FieldTranslations.json).
 
 Table Schema
 
-See WeatherForecastAnalyzer.json for the authoritative field list, and
+See WeatherForecastAnalyzer.json (raw.forecast) and ActualSchema.json
+(raw.actual) for the authoritative field lists, and
 DESIGN_NOTES.md for the reasoning behind the primary key (Requested/Resolved
 lat-long, ReportDateTime, ForecastDateTime) and why City and Elevation are
 descriptive rather than key fields.
@@ -69,13 +96,19 @@ Runs hourly via crontab, logging to logs/ (gitignored):
   0 * * * * /path/to/venv/bin/python3 /path/to/Pipeline.py >>
   /path/to/logs/pipeline.log 2>&1
 
-Locations list currently lives inline in Pipeline.py (todo: move to a config
-file).
+The actuals pipeline runs from its own crontab entry, logging to
+logs/pipeline_actual.log. It works out its own date range each run, so the
+schedule only needs to be "at least once a day while the machine is on"; a
+missed day just means a longer range next time.
+
+Locations: PipelineActual.py reads Locations.json; Pipeline.py still has an
+inline copy (todo: switch it to Locations.json too).
 
 Planned Expansion
 
-Not yet started: a second raw table for actual/observed weather (ground
-truth, not forecasts), a dbt layer joining it against raw.forecast to compute
-forecast-vs-actual shift by lead time, and a BI tool (Power BI/Tableau/Looker
-Studio, undecided) on top of that for city/metric/time-frame segmentation.
+Built: a second raw table for actual/observed weather (raw.actual, see
+Actuals Pipeline Flow). Not yet started: a dbt layer joining it against
+raw.forecast to compute forecast-vs-actual shift by lead time, and a BI tool
+(Power BI/Tableau/Looker Studio, undecided) on top of that for
+city/metric/time-frame segmentation.
 See DESIGN_NOTES.md's "Planned Expansion" section for the reasoning.
