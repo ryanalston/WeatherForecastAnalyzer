@@ -15,8 +15,14 @@ def ensure_table(table_ref, schema_path):
         raise
 
 def get_latest_report_date_time(city):
-    query_string = "SELECT MAX(ReportDateTime) AS max_report_date_time FROM weatherforecastanalyzer.raw.forecast WHERE City = '" + city + "'"  
-    job = client.query( query_string )
+    query_string = "SELECT MAX(ReportDateTime) AS max_report_date_time FROM weatherforecastanalyzer.raw.forecast WHERE City = @city" 
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("city", "STRING", city),
+        ]
+    )
+
+    job = client.query(query_string, job_config=job_config)
     rows = job.result()
     for row in rows:
         return row['max_report_date_time']
