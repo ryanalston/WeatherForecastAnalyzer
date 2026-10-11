@@ -8,11 +8,12 @@ metadata = {}
 # set cron_top_of_hour to the floor of now eg. drop mins, secs, etc
 now = datetime.now(timezone.utc)
 cron_top_of_hour = now.replace(minute=0, second=0, microsecond=0)
-metadata["cron_top_of_hour"] = cron_top_of_hour
+metadata["report_date_time"] = cron_top_of_hour
 
 # reference to BQ table 
 table_ref   = "weatherforecastanalyzer.raw.forecast"
 schema_path = os.path.join(script_dir, "WeatherForecastAnalyzer.json")
+field_translations  = os.path.join(script_dir, "FieldTranslations.json")
 
 Load.ensure_table(table_ref, schema_path)
 
@@ -39,7 +40,7 @@ for location in locations:
         results.append(data)
 if results:
     print(f"  Extracted {len(results)} data points across {len(locations)} locations")
-    df = Transform.transform_shape(results,metadata)
+    df = Transform.transform_shape(results, metadata, field_translations)
     Load.load(table_ref, df)
 
 

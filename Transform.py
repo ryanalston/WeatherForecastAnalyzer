@@ -1,15 +1,11 @@
-import pandas as pd, json, os
-from Paths import script_dir
+import pandas as pd, json
 from datetime import datetime
 
-field_translations  = os.path.join(script_dir, "FieldTranslations.json")
 
-def transform_shape( location_forecasts, metadata ):
-    # capture report gen time and parse location_forecasts into result
-    cron_top_of_hour = metadata['cron_top_of_hour']
+def transform_shape(locations_data, metadata, field_translations):
     result = []
-    # traverse location_forecasts for each city
-    for location in location_forecasts:
+    # traverse locations_data for each city
+    for location in locations_data:
         try:
             hourly = location['hourly']
             # zip hourly data into row and set metdata fields
@@ -22,7 +18,8 @@ def transform_shape( location_forecasts, metadata ):
                 row["resolved_longitude"]   = location["resolved_longitude"]
                 row["elevation"]            = location["elevation"]
                 row['time']                 = datetime.strptime(row['time'], "%Y-%m-%dT%H:%M")
-                row["report_date_time"]     = cron_top_of_hour
+                for field, value in metadata.items():
+                    row[field]              = value
                 result.append(row)
         except (KeyError, IndexError) as e:
             print(f"Skipping malformed location: {location}\n{e}")
