@@ -1,4 +1,16 @@
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
+
+retry = Retry(
+    total=5,
+    backoff_factor=2,
+    backoff_jitter=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET"],
+)
+session = requests.Session()
+session.mount("https://", HTTPAdapter(max_retries=retry))
 
 weather_params = [
         "temperature_2m",
@@ -26,7 +38,11 @@ def get_forecast( location ):
             }
         
     print(f" querying api against: {location['city']}")
-    r = requests.get( endpoint, params )
+    try:
+        r = session.get(endpoint, params=params, timeout=10)
+    except requests.exceptions.RequestException as e:
+        print(f"  request failed! {e}")
+        return None
     res = None
     if(r.status_code != 200):
         print(f"  api returned: {r.status_code}")
