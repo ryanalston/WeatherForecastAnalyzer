@@ -301,4 +301,4 @@ client and ensure_table; its load() has no one-hour skip rule. Each location
 is handled inside its own try/except in PipelineActual, so one location's
 failure is logged and the rest still run (same fail-soft tradeoff as
 forecast: read pipeline_actual.log). Locations live in Locations.json, read
-by PipelineActual (Pipeline.py still has its own inline copy for now).
+by both pipelines.

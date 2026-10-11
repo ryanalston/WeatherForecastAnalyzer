@@ -67,7 +67,7 @@ File Responsibilities
   - ExtractActual.py - pulls a date range of observed weather from Open-Meteo's archive endpoint (model pinned via MODEL), reusing Extract's session and field list. Returns the same shape as Extract.get_forecast so Transform can handle both.
   - LoadActual.py - high-water-mark query (parameterized, keyed on requested coordinates) and the raw.actual load. Reuses Load's BigQuery client and ensure_table.
   - PipelineActual.py - orchestrates the actuals run, one location at a time (see Actuals Pipeline Flow).
-  - Locations.json - the list of locations (city label + requested coordinates). Read by PipelineActual.py; Pipeline.py still has its own inline copy.
+  - Locations.json - the list of locations (city label + requested coordinates). Read by both Pipeline.py and PipelineActual.py, so a location is added or fixed in one place.
   - ActualSchema.json / ActualFieldTranslations.json - raw.actual's schema and API-name -> column-name map (the forecast equivalents are WeatherForecastAnalyzer.json and FieldTranslations.json).
 
 Table Schema
@@ -101,8 +101,8 @@ logs/pipeline_actual.log. It works out its own date range each run, so the
 schedule only needs to be "at least once a day while the machine is on"; a
 missed day just means a longer range next time.
 
-Locations: PipelineActual.py reads Locations.json; Pipeline.py still has an
-inline copy (todo: switch it to Locations.json too).
+Locations: both pipelines read Locations.json (city label + requested
+coordinates).
 
 Planned Expansion
 
