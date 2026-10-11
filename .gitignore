@@ -8,3 +8,4 @@ __pycache__/
 google-cloud-sdk/
 tags
 logs/
+.claude
