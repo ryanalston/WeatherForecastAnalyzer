@@ -1,0 +1,23 @@
+{
+	"city"			: 	"City",
+	"resolved_latitude"	: 	"ResolvedLatitude",
+	"resolved_longitude"	:	"ResolvedLongitude",
+	"requested_latitude"	:	"RequestedLatitude",
+	"requested_longitude"	:	"RequestedLongitude",
+	"elevation"		:	"Elevation",
+	"time"			:	"ObservedDateTime",
+	"loaded_date_time"	:	"LoadedDateTime",
+	"model"			:	"Model",
+	"temperature_2m"	:	"Temperature_2m",
+	"relative_humidity_2m"	:	"RelativeHumidity_2m",
+	"dew_point_2m"		:	"DewPoint_2m",
+	"apparent_temperature"	:	"ApparentTemperature",
+	"cloud_cover"		:	"CloudCover",
+	"wind_speed_10m"	:	"WindSpeed_10m",
+	"wind_direction_10m"	:	"WindDirection_10m",
+	"weather_code"		:	"WeatherCode",
+	"precipitation"		:	"Precipitation",
+	"snowfall"		:	"Snowfall",
+	"rain"			:	"Rain",
+	"showers"		:	"Showers"
+}
