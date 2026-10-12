@@ -162,11 +162,12 @@ Known Gaps / Things To Verify
 - Decision: Load.load() was changed from fail-fast to fail-soft per city. Previously, an exception loading any one city's DataFrame into BigQuery (or querying its latest ReportDateTime) re-raised and aborted the whole run, silently skipping every city later in the locations list that cycle. Now each city's block is wrapped individually — a failure is logged (Unable to load city {city}: {e}) and the loop continues to the next city, so one city's BQ/query failure no longer costs other cities their hourly load. Tradeoff accepted deliberately: failures are now easy to miss unless the logs are read, since nothing raises out of a fully-failed run. Revisit if that turns out to matter (e.g. add a summary/alert on partial failure) once there's real log history to judge frequency against.
 - Fixed: Porto, Portugal longitude was incorrectly setup, causing data to be pulled for a different area: "Gulf of Asinara, Sardinia", flipped the sign on longitude, and updated BQ table for dates: 2026-08-31 to 2026-10-10 changing only label of field City for 131,544 rows
 - Observed: on 2026-10-06 13:00 UTC it appears the resolved longitude changed for the misconfigured Portugal location, changing from 8.625 to 8.6404085, as well as resolved latitude from 41.125 to 41.147305 for Gulf of Asinara, Sardinia
-- Fixed: hours were silently missing for whichever city came first in the locations list. pipeline.log showed 152 "api returned: 503" lines through 2026-10-10, ranked by list position: Elk Grove (1st) 94, San Jose (2nd) 24, Los Angeles (3rd) 12, the rest in single digits. Open-Meteo turns away the first requests that arrive exactly at :00, when scheduled jobs everywhere fire at once, and Extract made a single attempt, so the first city lost that hour (Elk Grove was 91 runs behind the best-covered city). Fixed by sending requests through a requests.Session with urllib3 Retry: 5 retries on 429/5xx with exponential backoff and jitter (waits of roughly 0, 4, 8, 16, 32s, so about a minute worst case per city), plus timeout=10 on every request, since requests has no default timeout and a hung connection would otherwise stall the hourly run indefinitely. A request that still fails after the retries is logged and skipped, same as before.
-- Decision: actuals are ERA5T, ERA5's preliminary release (about 5 days behind real time). ECMWF replaces it with final ERA5 roughly 2-3 months later, usually with small or no changes. The actuals pipeline does not re-pull already-loaded hours, so raw.actual keeps the preliminary values. Accepted for now; a periodic re-pull of old ranges plus "latest LoadedDateTime wins" in dbt would pick up revisions if they ever matter.
+- Fixed: hours were silently missing for whichever city came first in the locations list. pipeline.log showed 152 "api returned: 503" lines through 2026-10-10, ranked by list position: Elk Grove (1st) 94, San Jose (2nd) 24, Los Angeles (3rd) 12, the rest in single digits. Open-Meteo turns away the first requests that arrive exactly at :00, when scheduled jobs everywhere fire at once, and Extract made a single attempt, so the first city lost that hour (Elk Grove was 91 runs behind the best-covered city). Fixed by sending requests through a requests.Session with urllib3 Retry: 5 retries on 429/5xx with exponential backoff and jitter (waits of roughly 0, 4, 8, 16, 32s, so about a minute worst case per city), plus timeout=10 on every request, since requests has no default timeout and a hung connection would otherwise stall the hourly run indefinitely. A request that still fails after the retries is logged and skipped, same as before. Result: from 2026-10-03 until the fix (5 PM PDT 2026-10-10), 30 of 167 hourly runs (18%) were missing at least one city; the first 22 runs after it were all 10/10, with no request exhausting its retries. Retries happen inside urllib3 and aren't logged, so how many 503s were absorbed isn't visible yet (the planned logging module could surface urllib3's DEBUG retry messages).
+- Decision: actuals are ERA5T, ERA5's preliminary release (about 5-6 days behind real time). ECMWF replaces it with final ERA5 roughly 2-3 months later, usually with small or no changes. The actuals pipeline does not re-pull already-loaded hours, so raw.actual keeps the preliminary values. Accepted for now; a periodic re-pull of old ranges plus "latest LoadedDateTime wins" in dbt would pick up revisions if they ever matter.
 - Observed: forecast and actual values describe different-sized areas. The forecast resolves to squares about 2-3 km wide (resolved points land 1-2 km from the requested pins in the US, about 5 km for Cebu), while era5_seamless uses a 0.1 degree grid (about 10 km; resolved points land 1.6-6.7 km from the US pins and 15 km from Cebu). Part of any measured forecast error is therefore area mismatch rather than forecast skill, most likely where weather changes over short distances (coastline and terrain: Los Angeles, San Jose, Porto, Cebu). Elevations returned by the two APIs match exactly for every pin, so temperature isn't skewed by height differences.
 - Observed: ERA5 resolved coordinates carry float32 rounding noise (e.g. 30.300003 for 30.3, -121.399994 for -121.4). Never compare them with =; round to one decimal if grouping by ERA5 square. Requested coordinates are exact (they come from Locations.json).
 - Observed: the Gulf of Asinara forecast rows (the pre-fix Porto pin) have no matching actuals, since actuals were only ever pulled for the corrected Porto coordinates, so those rows drop out of any forecast-vs-actual join. Porto's actuals start 2026-08-31 at the correct location, while its forecasts start 2026-10-11 00:00 UTC.
+- Observed: ERA5's lag isn't fixed. On 2026-10-10 the archive was filled through 2026-10-05 23:00 UTC (5 days behind); on 2026-10-11 it still ended there (6+ days), so that day's 10:15 run correctly loaded nothing ("nothing new" for every location). No code change needed: unfilled hours come back null and are dropped, so the high-water mark just waits. The dbt freshness threshold for raw.actual is set with this in mind (see dbt Layer).
 
 Future Expansion (Not In Scope For V1)
 
@@ -174,7 +175,7 @@ Future Expansion (Not In Scope For V1)
 - Break down forecast accuracy by time-of-day, season, resolved tile, and location (now that Requested vs. Resolved coordinates are captured separately in the key).
 - Correlate accuracy with instrument/equipment metadata (station age, brand, sensor height/type) via dimension tables — moves the project from "pulled some weather data" toward "evaluates forecast reliability across sources and conditions."
 
-Planned Expansion: Actual-Weather Comparison via dbt + BI Tool (Ingest Built 2026-10-10; dbt Not Started)
+Planned Expansion: Actual-Weather Comparison via dbt + BI Tool (Ingest Built 2026-10-10; dbt Staging Built 2026-10-11)
 
 Distinct from the "compare multiple data sources" bullet above (which compares
 forecast providers against each other). This is a different comparison:
@@ -302,3 +303,66 @@ is handled inside its own try/except in PipelineActual, so one location's
 failure is logged and the rest still run (same fail-soft tradeoff as
 forecast: read pipeline_actual.log). Locations live in Locations.json, read
 by both pipelines.
+
+dbt Layer (Started 2026-10-11)
+
+The transform-in-the-warehouse half of the plan above. The dbt project lives
+in wfa_dbt/ inside this repo (dbt project names can't contain hyphens or be
+"dbt", so the folder isn't just dbt/). It reads the two raw tables and writes
+its models to a separate BigQuery dataset, dbt_dev, so raw is never modified
+by dbt. Built so far: sources, two staging models, and tests. The
+forecast-vs-actual mart is next.
+
+Separate virtualenv (dbt-venv/, gitignored). dbt-bigquery brings its own
+version requirements for google-cloud-bigquery, protobuf and friends, and the
+pipeline's venv/ pins exact versions in requirements.txt. Installing dbt into
+venv/ could quietly upgrade or downgrade a library the hourly cron job
+depends on, and the first sign would be a gap in the data. dbt never imports
+the pipeline's Python (it only talks to BigQuery), so nothing is lost by
+keeping them apart. dbt-venv/ is built on Python 3.11 (Ubuntu 22.04's
+default python3 is 3.10, which Google's libraries now warn is past end of
+life; 3.11 is installed alongside it). The pipeline venv is still 3.10;
+moving it is planned as its own step, since cron runs it every hour. A shell
+alias points dbt at dbt-venv/bin/dbt, so no venv activation is needed.
+
+Connection: ~/.dbt/profiles.yml (outside the repo), method oauth, so dbt
+uses the same gcloud application-default credentials as the pipelines and
+there's no key file to manage or leak. Location US, matching raw (SetupDW.py
+created it without a location, which defaults to US; a join across
+locations would fail).
+
+Sources (models/staging/_sources.yml): raw.forecast and raw.actual are
+declared as sources, and models read them through source() rather than
+hardcoded table names, which is what gives dbt the lineage from raw tables
+to models. Each has a freshness check (dbt source freshness), which reports
+how old the newest row is:
+- forecast, on ReportDateTime: warn after 2 hours, error after 6. A
+  forecast warning usually means the PC was off.
+- actual, on ObservedDateTime (warn after 8 days, error after 10), not
+  LoadedDateTime. Runs that find nothing new write nothing, so LoadedDateTime
+  can go stale while everything is healthy; what matters is how recent the
+  newest observation is, and ERA5 alone keeps that 5-6 days behind (see Known
+  Gaps).
+
+Staging (models/staging/stg_forecast.sql, stg_actual.sql): one view per raw
+table, same rows, columns renamed to snake_case (ReportDateTime ->
+report_date_time). Nothing else: no joins, filters or derived columns, so
+staging is a clean 1:1 interface and logic lives in the models built on it.
+Views rather than tables because they're just a rename: they cost nothing to
+create and always reflect the latest hourly load. Raw keeps its PascalCase
+names, since changing them would mean a schema migration on live tables for
+no gain once staging exists. models/marts/ is configured to build tables,
+for the joined models that get queried repeatedly.
+
+Tests (models/staging/_staging.yml, using the dbt_utils package):
+- Grain: the column combination that identifies one row must never repeat.
+  stg_forecast: requested lat/lon + report_date_time + forecast_date_time.
+  stg_actual: requested lat/lon + observed_date_time. loaded_date_time is
+  deliberately left out of the actual grain: if the high-water mark ever
+  broke and the same hour loaded twice, the two rows would differ only in
+  loaded_date_time, so including it would let exactly that duplicate pass.
+- not_null on the timestamps and city in both models.
+All 8 passed on the first run (2026-10-11), confirming that neither table has
+ever had a duplicate row: Load's one-hour skip rule and the actuals
+high-water mark have held across every run so far. package-lock.yml is
+committed so a fresh clone installs the same dbt_utils version.

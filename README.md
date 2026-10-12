@@ -47,13 +47,28 @@ its own schedule and doesn't touch the forecast pipeline. Per location:
   2. ExtractActual.get_actual requests from that date through today (UTC).
   3. Transform.py reshapes it exactly as for forecasts, using
      ActualFieldTranslations.json and stamping LoadedDateTime and Model.
-  4. Rows with nulls (hours ERA5 hasn't filled yet; it runs ~5 days behind)
+  4. Rows with nulls (hours ERA5 hasn't filled yet; it runs about 5-6 days behind, varying day to day)
      and rows at or before the high-water mark are dropped.
   5. LoadActual.load writes what's left; if nothing is left, the location is
      logged as "nothing new". A failing location is logged and skipped.
 
 No drop/archive step: ERA5 is a permanent archive, so anything missing can be
 pulled again. See DESIGN_NOTES.md "Actuals Ingest" for the reasoning.
+
+dbt Layer
+
+wfa_dbt/ is a dbt project that builds on the two raw tables inside BigQuery,
+writing to its own dataset (dbt_dev) so raw is never touched:
+
+  - models/staging/_sources.yml declares raw.forecast and raw.actual as
+    sources, with freshness checks (how old the newest row is).
+  - stg_forecast and stg_actual are views over the raw tables with columns
+    renamed to snake_case; no other logic.
+  - models/staging/_staging.yml tests each model's grain (no duplicate
+    rows) and not-null timestamps/city.
+
+Not built yet: the mart joining forecasts to actuals by requested coordinates
+and hour. See DESIGN_NOTES.md "dbt Layer".
 
 File Responsibilities
 
@@ -68,6 +83,7 @@ File Responsibilities
   - LoadActual.py - high-water-mark query (parameterized, keyed on requested coordinates) and the raw.actual load. Reuses Load's BigQuery client and ensure_table.
   - PipelineActual.py - orchestrates the actuals run, one location at a time (see Actuals Pipeline Flow).
   - Locations.json - the list of locations (city label + requested coordinates). Read by both Pipeline.py and PipelineActual.py, so a location is added or fixed in one place.
+  - wfa_dbt/ - the dbt project (sources, staging models, tests). Runs from its own virtualenv, dbt-venv/, separate from the pipeline's venv/; see DESIGN_NOTES.md "dbt Layer".
   - ActualSchema.json / ActualFieldTranslations.json - raw.actual's schema and API-name -> column-name map (the forecast equivalents are WeatherForecastAnalyzer.json and FieldTranslations.json).
 
 Table Schema
@@ -89,6 +105,16 @@ Running It
      the BigQuery table exists on every run, so no separate manual
      table-creation step is needed.
 
+dbt (separate venv, so it can't change the pipeline's pinned packages):
+
+  1. python3.11 -m venv dbt-venv
+     dbt-venv/bin/pip install dbt-core dbt-bigquery
+  2. ~/.dbt/profiles.yml: profile wfa_dbt, method oauth, project
+     weatherforecastanalyzer, dataset dbt_dev, location US (dbt init wfa_dbt
+     writes this interactively).
+  3. From wfa_dbt/: dbt deps (installs dbt_utils), then
+     dbt source freshness, dbt run, dbt test.
+
 Scheduling
 
 Runs hourly via crontab, logging to logs/ (gitignored):
@@ -107,8 +133,9 @@ coordinates).
 Planned Expansion
 
 Built: a second raw table for actual/observed weather (raw.actual, see
-Actuals Pipeline Flow). Not yet started: a dbt layer joining it against
-raw.forecast to compute forecast-vs-actual shift by lead time, and a BI tool
+Actuals Pipeline Flow), and the start of the dbt layer (sources, staging
+models, tests). Not yet built: the dbt mart joining actuals against
+forecasts to compute forecast-vs-actual shift by lead time, and a BI tool
 (Power BI/Tableau/Looker Studio, undecided) on top of that for
 city/metric/time-frame segmentation.
 See DESIGN_NOTES.md's "Planned Expansion" section for the reasoning.
