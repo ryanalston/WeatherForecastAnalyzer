@@ -1,0 +1,17 @@
+sources:
+  - name: raw
+    database: weatherforecastanalyzer
+    schema: raw
+    tables:
+      - name: forecast
+        config:
+          loaded_at_field: ReportDateTime
+          freshness:
+            warn_after: {count: 2, period: hour}
+            error_after: {count: 6, period: hour}
+      - name: actual
+        config:
+          loaded_at_field: ObservedDateTime
+          freshness:
+            warn_after: {count: 8, period: day}
+            error_after: {count: 10, period: day}

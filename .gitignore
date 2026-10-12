@@ -9,3 +9,4 @@ google-cloud-sdk/
 tags
 logs/
 .claude
+dbt-venv/
