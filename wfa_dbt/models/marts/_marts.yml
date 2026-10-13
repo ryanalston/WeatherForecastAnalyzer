@@ -36,3 +36,9 @@ models:
       - name: precipitation_actual
         data_tests:
           - not_null
+  - name: agg_forecast_error_by_lead_day
+    columns:
+      - name: lead_day
+        data_tests:
+            - unique
+            - not_null
